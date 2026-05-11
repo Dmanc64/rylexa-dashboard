@@ -1,0 +1,58 @@
+@import "tailwindcss";
+/* NOTE: mapbox-gl CSS moved to portfolio-map/page.tsx (loaded only when map is visited) */
+
+@theme {
+  /* We define our slate-emerald variables here for the design system */
+  --color-brand-slate: #0f172a;
+  --color-brand-emerald: #10b981;
+}
+
+:root {
+  --foreground-rgb: 15, 23, 42;
+  --background-start-rgb: 248, 250, 252;
+  --background-end-rgb: 255, 255, 255;
+}
+
+/* Custom Base Styles */
+body {
+  background-color: rgb(248, 250, 252); /* Tailwind slate-50 equivalent */
+  color: rgb(15, 23, 42); /* Tailwind slate-900 equivalent */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* PWA safe area support for notch/status bar */
+@supports (padding-top: env(safe-area-inset-top)) {
+  .safe-top { padding-top: env(safe-area-inset-top); }
+  .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  .safe-top-offset { top: calc(0.75rem + env(safe-area-inset-top)); }
+}
+
+/* Custom Utility Classes */
+@layer utilities {
+  .glass-card {
+    background-color: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgb(226, 232, 240);
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    border-radius: 2rem;
+  }
+
+  .btn-primary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    background-color: rgb(15, 23, 42);
+    color: white;
+    font-weight: 700;
+    border-radius: 1rem;
+    transition-property: all;
+    transition-duration: 300ms;
+  }
+
+  .btn-primary:hover {
+    background-color: #10b981; /* Emerald-600 */
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+  }
+}
