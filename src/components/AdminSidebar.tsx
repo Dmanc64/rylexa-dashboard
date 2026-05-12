@@ -52,7 +52,7 @@ export default function AdminSidebar() {
       name: 'Finance',
       href: '/admin/finance',
       icon: DollarSign,
-      allowedRoles: ['Admin', 'Property Manager', 'Accounting']
+      allowedRoles: ['Admin', 'Accounting']   // PM removed — separation of duties
     },
     {
       name: 'Vendors',
@@ -64,7 +64,7 @@ export default function AdminSidebar() {
       name: 'Owners',
       href: '/admin/owners',
       icon: Users2,
-      allowedRoles: ['Admin', 'Property Manager']
+      allowedRoles: ['Admin']   // PM removed — owner relations handled by admin/accounting
     },
     {
       name: 'Documents',
@@ -106,13 +106,13 @@ export default function AdminSidebar() {
       name: 'AI Audit',
       href: '/admin/audit',
       icon: Sparkles,
-      allowedRoles: ['Admin', 'Property Manager']
+      allowedRoles: ['Admin']   // PM removed — admin oversight tool
     },
     {
       name: 'Analytics',
       href: '/admin/analytics/scorecard',
       icon: BarChart3,
-      allowedRoles: ['Admin', 'Property Manager']
+      allowedRoles: ['Admin']   // PM removed — portfolio-wide trends, admin scope
     },
     {
       name: 'Reports',
@@ -124,7 +124,7 @@ export default function AdminSidebar() {
       name: 'Workflows',
       href: '/admin/settings/workflows',
       icon: GitBranch,
-      allowedRoles: ['Admin', 'Property Manager']
+      allowedRoles: ['Admin']   // PM removed — middleware ADMIN_ONLY_PREFIXES blocks anyway, was a dead link for PMs
     },
     {
       name: 'Audit Trail',

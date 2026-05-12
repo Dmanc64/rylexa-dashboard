@@ -1,6 +1,6 @@
 'use client'
 
-import React from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   Building2, Wrench, BarChart3, Banknote,
   LayoutGrid, ArrowUpRight, ShieldCheck,
@@ -8,8 +8,25 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import ActivityFeed from '@/components/ActivityFeed'
+import { supabase } from '@/lib/supabaseClient'
 
 export default function AdminDashboard() {
+  // Role-gate finance-related NavCards. PMs don't see Performance/Distributions
+  // (separation of duties; matches the sidebar's PM exclusion of Finance).
+  const [role, setRole] = useState<string | null>(null)
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return
+      supabase
+        .from('profiles')
+        .select('role')
+        .eq('id', user.id)
+        .single()
+        .then(({ data }) => setRole(data?.role ?? null))
+    })
+  }, [])
+  const canSeeFinance = role !== 'Property Manager'   // null while loading → hidden until known
+
   return (
     <div className="max-w-7xl mx-auto space-y-12 p-6 animate-in fade-in duration-700">
       
@@ -53,25 +70,29 @@ export default function AdminDashboard() {
           count="Active"
         />
 
-        {/* UPDATED LINK: Points to the new Finance Dashboard */}
-        <NavCard 
-          href="/admin/finance" 
-          title="Performance"
-          description="Executive Financial Audit"
-          icon={<BarChart3 size={24} />}
-          color="bg-blue-600"
-          count="94% NOI"
-        />
+        {/* Performance — Admin/Accounting only (PMs are excluded from finance pages) */}
+        {canSeeFinance && (
+          <NavCard
+            href="/admin/finance"
+            title="Performance"
+            description="Executive Financial Audit"
+            icon={<BarChart3 size={24} />}
+            color="bg-blue-600"
+            count="94% NOI"
+          />
+        )}
 
-        {/* UPDATED LINK: Points to the new Distributions folder */}
-        <NavCard 
-          href="/admin/finance/distributions"
-          title="Distributions"
-          description="Execute Owner Payouts"
-          icon={<Banknote size={24} />}
-          color="bg-indigo-600"
-          count="Ready"
-        />
+        {/* Distributions — Admin/Accounting only (PMs are denied at the middleware) */}
+        {canSeeFinance && (
+          <NavCard
+            href="/admin/finance/distributions"
+            title="Distributions"
+            description="Execute Owner Payouts"
+            icon={<Banknote size={24} />}
+            color="bg-indigo-600"
+            count="Ready"
+          />
+        )}
       </div>
 
       {/* 3. SECONDARY UTILITY SECTION */}

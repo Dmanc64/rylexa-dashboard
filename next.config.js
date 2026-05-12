@@ -93,9 +93,14 @@ const nextConfig = {
     ]
   },
 
-  // Empty turbopack config so `next dev` (Turbopack) doesn't error
-  // when it sees the Serwist webpack wrapper. SW is disabled in dev anyway.
-  turbopack: {},
+  // Pin Turbopack's workspace root to THIS directory.
+  // Without this, the dev server detects the stray C:\Users\Dan\package-lock.json
+  // and tries to index the entire home directory → OOM crash on startup.
+  // The empty object also keeps `next dev` (Turbopack) from erroring on the
+  // Serwist webpack wrapper. SW is disabled in dev anyway.
+  turbopack: {
+    root: import.meta.dirname,
+  },
 
   // Note: ESLint 'ignoreDuringBuilds' is now handled via CLI or .eslintrc
   // Note: NEXT_PUBLIC_ env vars are automatically injected; no need for manual mapping here.
