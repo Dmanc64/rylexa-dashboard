@@ -111,7 +111,7 @@ export default function TenantsPage() {
               {tenants.map((tenant) => (
                 <tr
                   key={tenant.id}
-                  onClick={() => router.push(`/tenants/${tenant.id}`)}
+                  onClick={() => router.push(`/admin/tenants/${tenant.id}`)}
                   className="hover:bg-slate-50 transition-colors group cursor-pointer"
                 >
                   <td className="px-8 py-6">

@@ -21,6 +21,7 @@ type StatementRow = {
   pdf_path: string | null
   generated_at: string
   // joined
+  tenant_id: string | null
   tenant_name: string
   unit_name: string
   property_name: string
@@ -50,7 +51,7 @@ export default function AdminStatementsPage() {
         *,
         leases!inner (
           id,
-          tenants ( first_name, last_name ),
+          tenants ( id, first_name, last_name ),
           units ( name, properties ( id, name ) )
         )
       `)
@@ -81,6 +82,7 @@ export default function AdminStatementsPage() {
         closing_balance: s.closing_balance,
         pdf_path: s.pdf_path,
         generated_at: s.generated_at,
+        tenant_id: tenant.id || null,
         tenant_name: `${tenant.first_name || ''} ${tenant.last_name || ''}`.trim() || 'Unknown',
         unit_name: unit.name || 'N/A',
         property_name: property.name || 'N/A',
@@ -245,12 +247,16 @@ export default function AdminStatementsPage() {
                 {filtered.map((stmt) => (
                   <tr key={stmt.id} className="hover:bg-slate-50/50 transition-colors group">
                     <td className="px-8 py-5">
-                      <Link
-                        href={`/admin/tenants/${stmt.lease_id}`}
-                        className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors"
-                      >
-                        {stmt.tenant_name}
-                      </Link>
+                      {stmt.tenant_id ? (
+                        <Link
+                          href={`/admin/tenants/${stmt.tenant_id}`}
+                          className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors"
+                        >
+                          {stmt.tenant_name}
+                        </Link>
+                      ) : (
+                        <span className="font-bold text-slate-900">{stmt.tenant_name}</span>
+                      )}
                     </td>
                     <td className="px-8 py-5">
                       <div className="text-sm font-bold text-slate-600">{stmt.property_name}</div>
