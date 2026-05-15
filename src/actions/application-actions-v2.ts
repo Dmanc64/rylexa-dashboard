@@ -367,9 +367,12 @@ export async function submitApplication(draft_token: string) {
   }
 
   const now = new Date().toISOString()
+  // status='Pending' (not 'Submitted') so the new app shows up in the existing
+  // admin pipeline's default filter without needing a UI change. The actual
+  // "this app has been submitted" signal is `submitted_at IS NOT NULL`.
   const { error: updErr } = await supabaseAdmin
     .from('applications')
-    .update({ submitted_at: now, status: 'Submitted' })
+    .update({ submitted_at: now, status: 'Pending' })
     .eq('id', draft.id)
   if (updErr) return { success: false, message: 'Submit failed: ' + updErr.message }
 
