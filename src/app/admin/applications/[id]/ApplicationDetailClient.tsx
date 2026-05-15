@@ -24,16 +24,27 @@ import {
   ArrowLeft, Download, Mail as MailIcon, RefreshCw, Loader2,
   User, Phone as PhoneIcon, MapPin, CreditCard, Briefcase, Users,
   HelpCircle, Paperclip, StickyNote, Calendar, Building2, Home,
-  CheckCircle2, XCircle, MinusCircle,
+  CheckCircle2, XCircle, MinusCircle, AlertTriangle, Gauge,
 } from 'lucide-react'
 import {
   getAttachmentSignedUrl,
   resendCoApplicantInvite,
+  rescoreApplication,
 } from '@/actions/application-actions-v2'
 
 // ────────────────────────────────────────────────────────────────────────────
 // TYPES
 // ────────────────────────────────────────────────────────────────────────────
+
+type ScoringFactor = {
+  name: string
+  key: string
+  weight: number
+  raw: string
+  score: number
+}
+type ScoringBreakdown = ScoringFactor[]
+type ScoringBlocker = { kind: string; message: string }
 
 type Attachment = {
   id: string
@@ -114,6 +125,9 @@ type ApplicationData = {
     phone: string | null
     screening_score: number | null
     screening_status: string | null
+    screening_breakdown: ScoringBreakdown | null
+    screening_blockers: ScoringBlocker[] | null
+    screened_at: string | null
     credit_score: number | null
     property_name: string | null
     unit_name: string | null
@@ -259,6 +273,15 @@ export function ApplicationDetailClient({ data }: { data: ApplicationData }) {
           <Stat label="Co-Applicants" value={String(data.coapplicants.length)} />
         </div>
       </div>
+
+      {/* Scoring card — full width, just below header */}
+      <ScoringCard
+        applicationId={a.id}
+        score={a.screening_score}
+        breakdown={a.screening_breakdown}
+        blockers={a.screening_blockers}
+        scoredAt={a.screened_at}
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
@@ -822,3 +845,156 @@ function CoAttachmentsList({ attachments }: { attachments: Attachment[] }) {
 
 // Unused but kept for symmetry — type-checker still wants the export not flagged
 void Home
+
+// ────────────────────────────────────────────────────────────────────────────
+// SCORING CARD
+// ────────────────────────────────────────────────────────────────────────────
+
+function scoreTier(score: number | null): { label: string; bg: string; text: string; ring: string } {
+  if (score === null || score === undefined) {
+    return { label: 'Not scored', bg: 'bg-slate-100', text: 'text-slate-500', ring: 'ring-slate-200' }
+  }
+  if (score >= 75) return { label: 'Strong',     bg: 'bg-emerald-100', text: 'text-emerald-700', ring: 'ring-emerald-300' }
+  if (score >= 50) return { label: 'Moderate',   bg: 'bg-amber-100',   text: 'text-amber-700',   ring: 'ring-amber-300' }
+  return            { label: 'Weak',       bg: 'bg-red-100',     text: 'text-red-700',     ring: 'ring-red-300' }
+}
+
+function ScoringCard({
+  applicationId,
+  score,
+  breakdown,
+  blockers,
+  scoredAt,
+}: {
+  applicationId: string
+  score: number | null
+  breakdown: ScoringBreakdown | null
+  blockers: ScoringBlocker[] | null
+  scoredAt: string | null
+}) {
+  const [busy, setBusy] = useState(false)
+  const [latestScore, setLatestScore] = useState(score)
+  const [latestBreakdown, setLatestBreakdown] = useState(breakdown)
+  const [latestBlockers, setLatestBlockers] = useState(blockers)
+  const [latestScoredAt, setLatestScoredAt] = useState(scoredAt)
+
+  const onRescore = async () => {
+    setBusy(true)
+    const r = await rescoreApplication(applicationId)
+    setBusy(false)
+    if (!r.success) {
+      toast.error(r.message ?? 'Re-score failed')
+      return
+    }
+    const data = r.breakdown as {
+      total_score: number
+      breakdown: ScoringBreakdown
+      blockers: ScoringBlocker[]
+      scored_at: string
+    }
+    setLatestScore(data.total_score)
+    setLatestBreakdown(data.breakdown)
+    setLatestBlockers(data.blockers)
+    setLatestScoredAt(data.scored_at)
+    toast.success('Re-scored.')
+  }
+
+  const tier = scoreTier(latestScore)
+  const hasData = latestScore !== null && latestBreakdown && latestBreakdown.length > 0
+
+  return (
+    <div className="bg-white rounded-[2rem] border border-slate-200 shadow-sm p-6 md:p-8">
+      <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-100">
+        <div className="w-7 h-7 rounded-lg bg-slate-50 text-slate-400 flex items-center justify-center">
+          <Gauge size={14} />
+        </div>
+        <h2 className="text-[10px] font-black uppercase tracking-widest text-slate-500 flex-1">Scoring</h2>
+        {latestScoredAt && (
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+            Scored {fmtDate(latestScoredAt)}
+          </p>
+        )}
+        <button
+          onClick={onRescore}
+          disabled={busy}
+          className="px-3 py-1.5 bg-white border border-slate-200 text-slate-600 font-black text-[10px] uppercase tracking-widest rounded-lg hover:bg-slate-100 disabled:opacity-50 flex items-center gap-1.5"
+        >
+          {busy ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+          Re-score
+        </button>
+      </div>
+
+      {!hasData ? (
+        <div className="text-center py-10">
+          <p className="text-sm text-slate-400 font-medium">This application hasn&apos;t been scored yet.</p>
+          <button
+            onClick={onRescore}
+            disabled={busy}
+            className="mt-3 px-5 py-2.5 bg-slate-900 text-white font-black text-[10px] uppercase tracking-widest rounded-xl hover:bg-emerald-600 disabled:opacity-60 inline-flex items-center gap-2"
+          >
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <Gauge size={12} />}
+            Run Scoring
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Big score number */}
+          <div className="md:col-span-1 flex flex-col items-center justify-center text-center">
+            <div className={`w-32 h-32 rounded-full ${tier.bg} ${tier.text} ring-4 ${tier.ring} flex flex-col items-center justify-center`}>
+              <p className="text-4xl font-black italic">{latestScore}</p>
+              <p className="text-[10px] font-black uppercase tracking-widest -mt-1">of 100</p>
+            </div>
+            <p className={`mt-3 text-sm font-black uppercase tracking-widest ${tier.text}`}>
+              {tier.label}
+            </p>
+          </div>
+
+          {/* Breakdown bars */}
+          <div className="md:col-span-2 space-y-2">
+            {(latestBreakdown ?? []).map((f) => (
+              <div key={f.key} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-black text-slate-700">{f.name}</span>
+                  <span className="font-mono font-bold text-slate-500">
+                    <span className="text-slate-900">{f.score}</span>
+                    <span className="text-slate-300"> / {f.weight}</span>
+                  </span>
+                </div>
+                <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all ${
+                      f.score / Math.max(f.weight, 1) >= 0.75 ? 'bg-emerald-500'
+                      : f.score / Math.max(f.weight, 1) >= 0.5 ? 'bg-amber-500'
+                      : 'bg-red-400'
+                    }`}
+                    style={{ width: `${Math.min(100, (f.score / Math.max(f.weight, 1)) * 100)}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-slate-400">{f.raw}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Blockers */}
+      {latestBlockers && latestBlockers.length > 0 && (
+        <div className="mt-6 pt-6 border-t border-slate-100">
+          <h3 className="text-[10px] font-black uppercase tracking-widest text-amber-700 mb-3 flex items-center gap-2">
+            <AlertTriangle size={12} /> Flags for review ({latestBlockers.length})
+          </h3>
+          <ul className="space-y-2">
+            {latestBlockers.map((b, i) => (
+              <li key={i} className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+                <p className="text-sm text-amber-800">{b.message}</p>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[10px] text-slate-400 mt-3">
+            These don&apos;t prevent approval. If you approve over a flag, you&apos;ll be asked to record a reason.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}

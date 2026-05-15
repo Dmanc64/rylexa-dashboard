@@ -448,6 +448,13 @@ export async function submitApplication(draft_token: string) {
     .eq('id', draft.id)
   if (updErr) return { success: false, message: 'Submit failed: ' + updErr.message }
 
+  // Auto-score on submit. Best-effort: don't fail the submit if scoring errors.
+  try {
+    await supabaseAdmin.rpc('score_application_v2', { p_app_id: draft.id })
+  } catch (err) {
+    console.error('score_application_v2 failed for app', draft.id, err)
+  }
+
   // Send co-applicant invites for any not-yet-invited rows
   const { data: pending } = await supabaseAdmin
     .from('application_coapplicants')
@@ -1371,7 +1378,7 @@ export async function getApplicationForAdmin(application_id: string) {
       q_water_filled_furniture, q_smoker,
       notes,
       email, phone,
-      screening_score, screening_status,
+      screening_score, screening_status, screening_breakdown, screening_blockers, screened_at,
       credit_score
     `)
     .eq('id', application_id)
@@ -1494,5 +1501,192 @@ export async function resendCoApplicantInvite(coapplicant_id: string) {
   }
 
   await sendCoApplicantInvite(supabaseAdmin, co)
+  return { success: true as const }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 16. ADMIN / PM: RESCORE APPLICATION
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Trigger a re-score on demand. Admin or PM. Returns the new breakdown.
+ */
+export async function rescoreApplication(application_id: string) {
+  if (!isValidUuid(application_id)) return { success: false as const, message: 'Invalid application id.' }
+  const isReviewer = await verifyReviewerSession()
+  if (!isReviewer) return { success: false as const, message: 'Forbidden.' }
+
+  const supabaseAdmin = getAdminClient()
+  const { data, error } = await supabaseAdmin.rpc('score_application_v2', { p_app_id: application_id })
+  if (error) return { success: false as const, message: 'Scoring failed: ' + error.message }
+
+  return { success: true as const, breakdown: data }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 17. SCORING WEIGHTS — get + set (Admin only for set)
+// ────────────────────────────────────────────────────────────────────────────
+
+export type ScoringWeights = {
+  income: number
+  employment: number
+  reserves: number
+  residential: number
+  debt: number
+  flags: number
+  completeness: number
+  documents: number
+}
+
+const DEFAULT_WEIGHTS: ScoringWeights = {
+  income: 30, employment: 15, reserves: 10, residential: 10,
+  debt: 10, flags: 15, completeness: 5, documents: 5,
+}
+
+/** Read the current scoring weights. Anyone authenticated can see them. */
+export async function getScoringWeights(): Promise<{
+  success: true
+  weights: ScoringWeights
+  updated_at: string | null
+} | {
+  success: false
+  message: string
+}> {
+  const role = await getCallerRole()
+  if (!role) return { success: false, message: 'Unauthorized.' }
+
+  const supabaseAdmin = getAdminClient()
+  const { data, error } = await supabaseAdmin
+    .from('application_scoring_weights')
+    .select('weights, updated_at')
+    .eq('id', 1)
+    .maybeSingle()
+
+  if (error) return { success: false, message: error.message }
+  return {
+    success: true,
+    weights: (data?.weights as ScoringWeights) ?? DEFAULT_WEIGHTS,
+    updated_at: data?.updated_at ?? null,
+  }
+}
+
+/**
+ * Update scoring weights. Admin only. The 8 weights are clamped to 0..100 and
+ * normalized so they sum to 100 — keeps the displayed total honest.
+ */
+export async function setScoringWeights(input: Partial<ScoringWeights>) {
+  const isAdmin = await verifyAdminSession()
+  if (!isAdmin) return { success: false as const, message: 'Admin only.' }
+
+  // Merge with defaults
+  const merged: ScoringWeights = { ...DEFAULT_WEIGHTS, ...input }
+
+  // Clamp each to 0..100
+  for (const k of Object.keys(merged) as Array<keyof ScoringWeights>) {
+    const v = merged[k]
+    if (!Number.isFinite(v) || v < 0) merged[k] = 0
+    else if (v > 100) merged[k] = 100
+  }
+
+  // Normalize to sum=100
+  const sum = Object.values(merged).reduce((a, b) => a + b, 0)
+  if (sum <= 0) return { success: false as const, message: 'At least one weight must be positive.' }
+  const normalized = Object.fromEntries(
+    Object.entries(merged).map(([k, v]) => [k, Math.round((v / sum) * 100)])
+  ) as Record<string, number>
+  // Fix rounding drift so it sums to exactly 100
+  const drift = 100 - Object.values(normalized).reduce((a, b) => a + b, 0)
+  if (drift !== 0) {
+    // Apply drift to whatever the largest weight is (so 100-sum imbalance lands somewhere reasonable)
+    const largestKey = Object.entries(normalized).sort(([, a], [, b]) => b - a)[0][0]
+    normalized[largestKey] += drift
+  }
+
+  const supabaseAdmin = getAdminClient()
+  const { error } = await supabaseAdmin
+    .from('application_scoring_weights')
+    .update({ weights: normalized, updated_at: new Date().toISOString() })
+    .eq('id', 1)
+  if (error) return { success: false as const, message: error.message }
+
+  return { success: true as const, weights: normalized as ScoringWeights }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 18. APPROVE / DENY WITH REASON (audit-trailed)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Approve or deny an application with a required documented reason. Used when
+ * blockers (low income, felony, etc.) are present — the reason gets written to
+ * audit_log so there's a defensible paper trail.
+ *
+ * Admin or PM only. PMs can only act on applications for their property-access
+ * properties (RLS on the UPDATE handles this).
+ */
+export async function decideApplicationWithReason(params: {
+  application_id: string
+  decision: 'Approved' | 'Denied' | 'Preapproved'
+  reason: string
+}) {
+  if (!isValidUuid(params.application_id)) return { success: false as const, message: 'Invalid application id.' }
+  if (!params.reason || params.reason.trim().length < 5) {
+    return { success: false as const, message: 'Reason must be at least 5 characters.' }
+  }
+  if (!['Approved', 'Denied', 'Preapproved'].includes(params.decision)) {
+    return { success: false as const, message: 'Invalid decision.' }
+  }
+
+  const isReviewer = await verifyReviewerSession()
+  if (!isReviewer) return { success: false as const, message: 'Forbidden.' }
+
+  // Identify the caller for the audit log
+  const cookieStore = await cookies()
+  const supabaseAuth = createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        get(name: string) { return cookieStore.get(name)?.value },
+        set() {}, remove() {},
+      },
+    }
+  )
+  const { data: { user } } = await supabaseAuth.auth.getUser()
+  if (!user) return { success: false as const, message: 'Unauthorized.' }
+
+  const supabaseAdmin = getAdminClient()
+  const { error: updErr } = await supabaseAdmin
+    .from('applications')
+    .update({ status: params.decision })
+    .eq('id', params.application_id)
+  if (updErr) return { success: false as const, message: 'Update failed: ' + updErr.message }
+
+  // Write to audit_log — best-effort; do not fail the decision if logging fails.
+  try {
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('email, role')
+      .eq('id', user.id)
+      .maybeSingle()
+    await supabaseAdmin.from('audit_log').insert({
+      table_name: 'applications',
+      record_id: params.application_id,
+      action: 'application_decision',
+      new_values: {
+        decision: params.decision,
+        reason: params.reason.trim(),
+      },
+      user_id: user.id,
+      user_email: profile?.email ?? null,
+      user_role: profile?.role ?? null,
+    })
+  } catch (err) {
+    console.error('audit_log insert failed for application decision:', err)
+  }
+
   return { success: true as const }
 }

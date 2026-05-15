@@ -142,6 +142,20 @@ export default function GlobalSettingsPage() {
                   </div>
                   <ChevronRight size={20} className="text-slate-300 group-hover:text-emerald-500" />
                 </Link>
+
+                <Link
+                  href="/admin/settings/scoring"
+                  className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 hover:bg-emerald-50 hover:border-emerald-200 transition-all group"
+                >
+                  <div className="flex items-center gap-3">
+                    <Sparkles size={18} className="text-slate-400 group-hover:text-emerald-600" />
+                    <div>
+                      <p className="font-bold text-slate-800 group-hover:text-emerald-700">Application Scoring Weights</p>
+                      <p className="text-xs text-slate-400 group-hover:text-emerald-500">Tune how much each factor (income, employment, screening flags, etc.) contributes to the 0&ndash;100 applicant score.</p>
+                    </div>
+                  </div>
+                  <ChevronRight size={20} className="text-slate-300 group-hover:text-emerald-500" />
+                </Link>
               </div>
             </section>
 

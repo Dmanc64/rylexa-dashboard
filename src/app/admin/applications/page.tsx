@@ -123,17 +123,32 @@ export default function ApplicationsConsole() {
                     <p className={`text-xs font-bold ${selectedApp?.id === app.id ? 'text-slate-400' : 'text-slate-500'}`}>
                       {app.property_name} • {app.unit_name}
                     </p>
-                    <Link
-                      href={`/admin/applications/${app.id}`}
-                      onClick={(e) => e.stopPropagation()}
-                      className={`mt-2 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest transition-colors ${
-                        selectedApp?.id === app.id
-                          ? 'text-emerald-300 hover:text-emerald-200'
-                          : 'text-emerald-600 hover:text-emerald-700'
-                      }`}
-                    >
-                      Full Details →
-                    </Link>
+                    <div className="flex items-center justify-between gap-2 mt-2">
+                      {app.screening_score != null ? (
+                        <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full ${
+                          app.screening_score >= 75 ? 'bg-emerald-100 text-emerald-700' :
+                          app.screening_score >= 50 ? 'bg-amber-100 text-amber-700' :
+                          'bg-red-100 text-red-700'
+                        }`}>
+                          Score {app.screening_score}/100
+                        </span>
+                      ) : (
+                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">
+                          Not scored
+                        </span>
+                      )}
+                      <Link
+                        href={`/admin/applications/${app.id}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className={`inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest transition-colors ${
+                          selectedApp?.id === app.id
+                            ? 'text-emerald-300 hover:text-emerald-200'
+                            : 'text-emerald-600 hover:text-emerald-700'
+                        }`}
+                      >
+                        Full Details →
+                      </Link>
+                    </div>
                   </div>
                 ))
               )}
@@ -165,11 +180,11 @@ export default function ApplicationsConsole() {
                   </div>
                   
                   <div className="flex flex-col items-end gap-2">
-                    {/* Risk / Screening Badge */}
-                    {screeningEnabled && selectedApp.screening_status === 'Screened' && selectedApp.screening_score != null ? (
+                    {/* Score badge — uses v2 scoring when present, falls back to income tier */}
+                    {selectedApp.screening_score != null ? (
                       <div className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-1.5 ${
-                        selectedApp.screening_score >= 70 ? 'text-emerald-600 bg-emerald-50' :
-                        selectedApp.screening_score >= 50 ? 'text-amber-500 bg-amber-50' :
+                        selectedApp.screening_score >= 75 ? 'text-emerald-600 bg-emerald-50' :
+                        selectedApp.screening_score >= 50 ? 'text-amber-600 bg-amber-50' :
                         'text-red-500 bg-red-50'
                       }`}>
                          <ShieldCheck size={14} /> {selectedApp.screening_score}/100

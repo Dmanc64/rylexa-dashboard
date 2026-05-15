@@ -32,6 +32,7 @@ const ADMIN_ONLY_PREFIXES = [
   '/admin/settings/users',
   '/admin/settings/access',         // covers /admin/settings/access AND /admin/settings/access/owners
   '/admin/settings/workflows',      // covers /admin/settings/workflows AND /admin/settings/workflows/[id]
+  '/admin/settings/scoring',        // application scoring weights — Admin tunable only
   // /admin/settings/audit-log is NOT admin-only — Accounting needs read access
   // for compliance audits. PMs are explicitly denied via ROLE_DENIES below.
 ] as const
