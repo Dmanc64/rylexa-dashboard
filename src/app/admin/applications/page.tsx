@@ -123,6 +123,17 @@ export default function ApplicationsConsole() {
                     <p className={`text-xs font-bold ${selectedApp?.id === app.id ? 'text-slate-400' : 'text-slate-500'}`}>
                       {app.property_name} • {app.unit_name}
                     </p>
+                    <Link
+                      href={`/admin/applications/${app.id}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className={`mt-2 inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest transition-colors ${
+                        selectedApp?.id === app.id
+                          ? 'text-emerald-300 hover:text-emerald-200'
+                          : 'text-emerald-600 hover:text-emerald-700'
+                      }`}
+                    >
+                      Full Details →
+                    </Link>
                   </div>
                 ))
               )}
@@ -153,20 +164,28 @@ export default function ApplicationsConsole() {
                      </div>
                   </div>
                   
-                  {/* Risk / Screening Badge */}
-                  {screeningEnabled && selectedApp.screening_status === 'Screened' && selectedApp.screening_score != null ? (
-                    <div className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-1.5 ${
-                      selectedApp.screening_score >= 70 ? 'text-emerald-600 bg-emerald-50' :
-                      selectedApp.screening_score >= 50 ? 'text-amber-500 bg-amber-50' :
-                      'text-red-500 bg-red-50'
-                    }`}>
-                       <ShieldCheck size={14} /> {selectedApp.screening_score}/100
-                    </div>
-                  ) : (
-                    <div className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${getRiskScore(selectedApp.income).color}`}>
-                       {getRiskScore(selectedApp.income).label}
-                    </div>
-                  )}
+                  <div className="flex flex-col items-end gap-2">
+                    {/* Risk / Screening Badge */}
+                    {screeningEnabled && selectedApp.screening_status === 'Screened' && selectedApp.screening_score != null ? (
+                      <div className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest flex items-center gap-1.5 ${
+                        selectedApp.screening_score >= 70 ? 'text-emerald-600 bg-emerald-50' :
+                        selectedApp.screening_score >= 50 ? 'text-amber-500 bg-amber-50' :
+                        'text-red-500 bg-red-50'
+                      }`}>
+                         <ShieldCheck size={14} /> {selectedApp.screening_score}/100
+                      </div>
+                    ) : (
+                      <div className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest ${getRiskScore(selectedApp.income).color}`}>
+                         {getRiskScore(selectedApp.income).label}
+                      </div>
+                    )}
+                    <Link
+                      href={`/admin/applications/${selectedApp.id}`}
+                      className="text-[10px] font-black uppercase tracking-widest text-emerald-600 hover:text-emerald-700"
+                    >
+                      Full Details →
+                    </Link>
+                  </div>
                </div>
 
                {/* Detail Body */}

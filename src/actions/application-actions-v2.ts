@@ -1221,6 +1221,18 @@ export async function getCoApplicantFull(portal_token: string) {
 
 /** Verify the caller is logged in as an Admin (cookie-based). */
 async function verifyAdminSession(): Promise<boolean> {
+  const role = await getCallerRole()
+  return role === 'Admin'
+}
+
+/** Verify the caller is an Admin or Property Manager. Used for review actions. */
+async function verifyReviewerSession(): Promise<boolean> {
+  const role = await getCallerRole()
+  return role === 'Admin' || role === 'Property Manager'
+}
+
+/** Look up the caller's role from the cookie session. Null if not logged in. */
+async function getCallerRole(): Promise<string | null> {
   const cookieStore = await cookies()
   const supabaseAuth = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -1234,7 +1246,7 @@ async function verifyAdminSession(): Promise<boolean> {
   )
 
   const { data: { user } } = await supabaseAuth.auth.getUser()
-  if (!user) return false
+  if (!user) return null
 
   const supabaseAdmin = getAdminClient()
   const { data: profile } = await supabaseAdmin
@@ -1243,5 +1255,169 @@ async function verifyAdminSession(): Promise<boolean> {
     .eq('id', user.id)
     .single()
 
-  return profile?.role === 'Admin'
+  return profile?.role ?? null
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 13. ADMIN: FETCH FULL APPLICATION FOR REVIEW
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Admin-side fetch returning the full v2 application data including all
+ * child arrays, co-applicants (with their data), and attachments. Used
+ * by the /admin/applications/[id] review page.
+ *
+ * Auth: Admin or Property Manager.
+ */
+export async function getApplicationForAdmin(application_id: string) {
+  if (!isValidUuid(application_id)) return { success: false as const, message: 'Invalid application id.' }
+
+  const isReviewer = await verifyReviewerSession()
+  if (!isReviewer) return { success: false as const, message: 'Forbidden.' }
+
+  const supabaseAdmin = getAdminClient()
+
+  // Application scalar fields + the legacy flat-schema fields kept for
+  // backwards compat with applications submitted before v2.
+  const { data: app } = await supabaseAdmin
+    .from('applications')
+    .select(`
+      id, unit_id, status, created_at, submitted_at, draft_email,
+      first_name, middle_name, last_name, salutation, suffix,
+      no_middle_name_certified, applicant_type,
+      company_name, use_company_as_display_name,
+      desired_move_in, date_of_birth,
+      ssn_last_4, gov_id_issuing_state,
+      employer, employer_phone, employer_address, employer_address_2,
+      position_held, years_worked, supervisor_name, supervisor_title, supervisor_email,
+      monthly_salary, income, annual_income,
+      q_delinquent_payment, q_felony_conviction, q_sued_landlord,
+      q_water_filled_furniture, q_smoker,
+      notes,
+      email, phone,
+      screening_score, screening_status,
+      credit_score
+    `)
+    .eq('id', application_id)
+    .maybeSingle()
+
+  if (!app) return { success: false as const, message: 'Application not found.' }
+
+  // Property + unit for header
+  let unitName: string | null = null
+  let propertyName: string | null = null
+  if (app.unit_id) {
+    const { data: u } = await supabaseAdmin
+      .from('units')
+      .select('name, properties(name)')
+      .eq('id', app.unit_id)
+      .maybeSingle()
+    if (u) {
+      unitName = (u as { name: string | null }).name
+      const props = (u as { properties: unknown }).properties
+      const propRow = Array.isArray(props) ? props[0] : props
+      propertyName = (propRow as { name?: string | null } | null)?.name ?? null
+    }
+  }
+
+  // Child arrays + attachments + co-applicants — fetched in parallel
+  const [
+    phones, emails, addresses, dependents, pets, banks, cards, addlIncome, emergency, coapps, attachments,
+  ] = await Promise.all([
+    supabaseAdmin.from('application_phones').select('*').eq('application_id', application_id).order('sort_order'),
+    supabaseAdmin.from('application_emails').select('*').eq('application_id', application_id).order('sort_order'),
+    supabaseAdmin.from('application_addresses').select('*').eq('application_id', application_id).order('sort_order'),
+    supabaseAdmin.from('application_dependents').select('*').eq('application_id', application_id).order('sort_order'),
+    supabaseAdmin.from('application_pets').select('*').eq('application_id', application_id).order('sort_order'),
+    supabaseAdmin.from('application_bank_accounts').select('*').eq('application_id', application_id).order('sort_order'),
+    supabaseAdmin.from('application_credit_cards').select('*').eq('application_id', application_id).order('sort_order'),
+    supabaseAdmin.from('application_additional_income').select('*').eq('application_id', application_id).order('sort_order'),
+    supabaseAdmin.from('application_emergency_contacts').select('*').eq('application_id', application_id).order('sort_order'),
+    supabaseAdmin.from('application_coapplicants').select('*').eq('application_id', application_id).order('created_at'),
+    supabaseAdmin.from('application_attachments').select('*').eq('application_id', application_id).order('uploaded_at'),
+  ])
+
+  return {
+    success: true as const,
+    application: {
+      ...app,
+      property_name: propertyName,
+      unit_name: unitName,
+    },
+    phones: phones.data ?? [],
+    emails: emails.data ?? [],
+    addresses: addresses.data ?? [],
+    dependents: dependents.data ?? [],
+    pets: pets.data ?? [],
+    bank_accounts: banks.data ?? [],
+    credit_cards: cards.data ?? [],
+    additional_income: addlIncome.data ?? [],
+    emergency_contacts: emergency.data ?? [],
+    coapplicants: coapps.data ?? [],
+    attachments: attachments.data ?? [],
+  }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 14. ADMIN: SIGNED URL FOR ATTACHMENT DOWNLOAD
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Generate a 5-minute signed URL for an attachment so admin/PM can download
+ * a private bucket file. Doesn't expose the path itself.
+ */
+export async function getAttachmentSignedUrl(attachment_id: string) {
+  if (!isValidUuid(attachment_id)) return { success: false as const, message: 'Invalid attachment id.' }
+  const isReviewer = await verifyReviewerSession()
+  if (!isReviewer) return { success: false as const, message: 'Forbidden.' }
+
+  const supabaseAdmin = getAdminClient()
+  const { data: meta } = await supabaseAdmin
+    .from('application_attachments')
+    .select('file_path, file_name')
+    .eq('id', attachment_id)
+    .maybeSingle()
+
+  if (!meta) return { success: false as const, message: 'Attachment not found.' }
+
+  const { data: signed, error } = await supabaseAdmin.storage
+    .from('application-attachments')
+    .createSignedUrl(meta.file_path, 300, { download: meta.file_name })
+
+  if (error || !signed?.signedUrl) {
+    return { success: false as const, message: error?.message ?? 'Could not create download link.' }
+  }
+  return { success: true as const, url: signed.signedUrl, file_name: meta.file_name }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 15. ADMIN: RESEND CO-APPLICANT INVITE
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Re-send the invite email to a co-applicant. Useful when the original
+ * email bounced, was deleted, or never landed. Updates invite_sent_at on success.
+ */
+export async function resendCoApplicantInvite(coapplicant_id: string) {
+  if (!isValidUuid(coapplicant_id)) return { success: false as const, message: 'Invalid co-applicant id.' }
+  const isReviewer = await verifyReviewerSession()
+  if (!isReviewer) return { success: false as const, message: 'Forbidden.' }
+
+  const supabaseAdmin = getAdminClient()
+  const { data: co } = await supabaseAdmin
+    .from('application_coapplicants')
+    .select('id, full_name, email, applicant_type, portal_token, submitted_at')
+    .eq('id', coapplicant_id)
+    .maybeSingle()
+
+  if (!co) return { success: false as const, message: 'Co-applicant not found.' }
+  if (co.submitted_at) {
+    return { success: false as const, message: 'This co-applicant has already submitted their portion.' }
+  }
+
+  await sendCoApplicantInvite(supabaseAdmin, co)
+  return { success: true as const }
 }
