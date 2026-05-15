@@ -518,6 +518,140 @@ export async function inviteCoApplicant(params: {
   return { success: true, coapplicant: { id: row.id, email: row.email } }
 }
 
+
+// ────────────────────────────────────────────────────────────────────────────
+// 5b. ADD CO-APPLICANT TO DRAFT (no email)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Add a co-applicant row to a draft application WITHOUT sending an invite.
+ * The invite email is queued until the primary applicant submits the
+ * application — submitApplication() will sweep up any rows with
+ * invite_sent_at IS NULL and send them then.
+ *
+ * Used by the multi-step wizard so applicants can add/remove co-applicants
+ * freely before deciding to submit.
+ */
+export async function addCoApplicantToDraft(params: {
+  draft_token: string
+  full_name: string
+  email: string
+  applicant_type: CoApplicantType
+}) {
+  const supabaseAdmin = getAdminClient()
+
+  if (!params.full_name || !params.email) return { success: false, message: 'Name and email are required.' }
+  if (!COAPPLICANT_TYPES.includes(params.applicant_type)) {
+    return { success: false, message: `Invalid applicant_type: ${params.applicant_type}` }
+  }
+
+  const draft = await lookupDraft(supabaseAdmin, params.draft_token)
+  if (!draft) return { success: false, message: 'Invalid or expired draft.' }
+  if (draft.submitted_at) return { success: false, message: 'Application already submitted; cannot add co-applicants.' }
+
+  const { data: row, error: insErr } = await supabaseAdmin
+    .from('application_coapplicants')
+    .insert({
+      application_id: draft.id,
+      full_name: params.full_name,
+      email: params.email.toLowerCase(),
+      applicant_type: params.applicant_type,
+    })
+    .select('id, full_name, email, applicant_type, status, invite_sent_at, submitted_at')
+    .single()
+
+  if (insErr || !row) return { success: false, message: 'Could not add co-applicant: ' + (insErr?.message ?? 'unknown') }
+
+  return { success: true, coapplicant: row }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 5c. REMOVE CO-APPLICANT FROM DRAFT
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Remove a co-applicant from a draft. Only permitted if the parent app is
+ * still a draft (not submitted) AND the co-applicant hasn't already been
+ * invited. Prevents the primary from yanking a co-applicant who has
+ * already received the email.
+ */
+export async function removeCoApplicantFromDraft(params: {
+  draft_token: string
+  coapplicant_id: string
+}) {
+  const supabaseAdmin = getAdminClient()
+
+  if (!isValidUuid(params.coapplicant_id)) return { success: false, message: 'Invalid co-applicant id.' }
+  const draft = await lookupDraft(supabaseAdmin, params.draft_token)
+  if (!draft) return { success: false, message: 'Invalid or expired draft.' }
+  if (draft.submitted_at) return { success: false, message: 'Application already submitted; cannot remove co-applicants.' }
+
+  const { data: co } = await supabaseAdmin
+    .from('application_coapplicants')
+    .select('id, invite_sent_at, application_id')
+    .eq('id', params.coapplicant_id)
+    .maybeSingle()
+
+  if (!co || co.application_id !== draft.id) {
+    return { success: false, message: 'Co-applicant not found on this application.' }
+  }
+  if (co.invite_sent_at) {
+    return { success: false, message: 'This co-applicant has already been invited and cannot be removed.' }
+  }
+
+  const { error: delErr } = await supabaseAdmin
+    .from('application_coapplicants')
+    .delete()
+    .eq('id', params.coapplicant_id)
+
+  if (delErr) return { success: false, message: 'Could not remove co-applicant: ' + delErr.message }
+  return { success: true }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 5d. DELETE ATTACHMENT FROM DRAFT
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Remove an attachment from a draft application. Removes both the storage
+ * object and the metadata row.
+ */
+export async function deleteAttachmentFromDraft(params: {
+  draft_token: string
+  attachment_id: string
+}) {
+  const supabaseAdmin = getAdminClient()
+
+  if (!isValidUuid(params.attachment_id)) return { success: false, message: 'Invalid attachment id.' }
+  const draft = await lookupDraft(supabaseAdmin, params.draft_token)
+  if (!draft) return { success: false, message: 'Invalid or expired draft.' }
+  if (draft.submitted_at) return { success: false, message: 'Application already submitted; cannot remove files.' }
+
+  const { data: meta } = await supabaseAdmin
+    .from('application_attachments')
+    .select('id, file_path, application_id')
+    .eq('id', params.attachment_id)
+    .maybeSingle()
+
+  if (!meta || meta.application_id !== draft.id) {
+    return { success: false, message: 'Attachment not found on this application.' }
+  }
+
+  // Best-effort storage delete (the metadata is the source of truth for listings;
+  // an orphan storage object is recoverable via housekeeping).
+  await supabaseAdmin.storage.from('application-attachments').remove([meta.file_path]).catch(() => {})
+
+  const { error: delErr } = await supabaseAdmin
+    .from('application_attachments')
+    .delete()
+    .eq('id', params.attachment_id)
+
+  if (delErr) return { success: false, message: 'Could not delete attachment: ' + delErr.message }
+  return { success: true }
+}
+
 /** Helper: send a co-applicant the magic-link email + update invite_sent_at. */
 async function sendCoApplicantInvite(
   supabaseAdmin: ReturnType<typeof getAdminClient>,
