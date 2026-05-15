@@ -211,6 +211,78 @@ function validatePayload(p: ApplicationDraftPayload): string | null {
 
 
 // ────────────────────────────────────────────────────────────────────────────
+// 0. PUBLIC: LIST VACANT UNITS FOR THE WIZARD
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Public, no-auth listing of vacant units for the /apply wizard's unit
+ * picker. The `units` table has RLS that requires `authenticated`, so the
+ * browser anon client gets 0 rows back. This action runs server-side with
+ * the service role and returns only the safe display fields.
+ *
+ * Intentionally returns a sanitized projection — no internal IDs beyond
+ * what the wizard needs, no compliance/affordability internals.
+ */
+export type PublicVacantUnit = {
+  id: string
+  name: string | null
+  market_rent: number | null
+  bedroom_count: number | null
+  bathrooms: number | null
+  sqft: number | null
+  availability_date: string | null
+  property_name: string | null
+}
+
+export async function getPublicVacantUnits(): Promise<{
+  success: true
+  units: PublicVacantUnit[]
+} | {
+  success: false
+  message: string
+}> {
+  const supabaseAdmin = getAdminClient()
+
+  const { data, error } = await supabaseAdmin
+    .from('units')
+    .select('id, name, market_rent, bedroom_count, bathrooms, sqft, availability_date, properties(name)')
+    .eq('status', 'Vacant')
+    .order('availability_date', { ascending: true, nullsFirst: false })
+    .limit(1000)
+
+  if (error) {
+    return { success: false, message: 'Could not load units: ' + error.message }
+  }
+
+  const units: PublicVacantUnit[] = ((data ?? []) as unknown[]).map((row) => {
+    const u = row as {
+      id: string
+      name: string | null
+      market_rent: number | null
+      bedroom_count: number | null
+      bathrooms: number | null
+      sqft: number | null
+      availability_date: string | null
+      properties: { name: string | null } | Array<{ name: string | null }> | null
+    }
+    const prop = Array.isArray(u.properties) ? u.properties[0] : u.properties
+    return {
+      id: u.id,
+      name: u.name,
+      market_rent: u.market_rent,
+      bedroom_count: u.bedroom_count,
+      bathrooms: u.bathrooms,
+      sqft: u.sqft,
+      availability_date: u.availability_date,
+      property_name: prop?.name ?? null,
+    }
+  })
+
+  return { success: true, units }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
 // 1. CREATE DRAFT
 // ────────────────────────────────────────────────────────────────────────────
 

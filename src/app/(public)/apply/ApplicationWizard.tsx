@@ -26,6 +26,7 @@ import {
   addCoApplicantToDraft,
   removeCoApplicantFromDraft,
   deleteAttachmentFromDraft,
+  getPublicVacantUnits,
 } from '@/actions/application-actions-v2'
 import {
   Check,
@@ -50,7 +51,6 @@ import {
   FileText,
   Building2,
 } from 'lucide-react'
-import { supabase } from '@/lib/supabaseClient'
 
 // ────────────────────────────────────────────────────────────────────────────
 // TYPES
@@ -738,43 +738,11 @@ function Step1({ state, setState }: { state: WizardState; setState: SetState }) 
     let cancelled = false
     async function load() {
       setLoading(true)
-      const { data } = await supabase
-        .from('units')
-        .select('id, name, market_rent, bedroom_count, bathrooms, sqft, availability_date, properties(name)')
-        .eq('status', 'Vacant')
-        .order('availability_date', { ascending: true, nullsFirst: false })
-        .limit(500)
+      // The `units` table has RLS that requires authenticated — the browser
+      // anon client gets 0 rows. Use the server action (service role) instead.
+      const result = await getPublicVacantUnits()
       if (cancelled) return
-      // PostgREST returns `properties` as either an object or array depending
-      // on how it infers the relationship; normalize to a single name.
-      setUnits(
-        ((data ?? []) as unknown[]).map((row) => {
-          const u = row as {
-            id: string
-            name: string | null
-            market_rent: number | null
-            bedroom_count: number | null
-            bathrooms: number | null
-            sqft: number | null
-            availability_date: string | null
-            properties:
-              | { name: string | null }
-              | Array<{ name: string | null }>
-              | null
-          }
-          const prop = Array.isArray(u.properties) ? u.properties[0] : u.properties
-          return {
-            id: u.id,
-            name: u.name,
-            market_rent: u.market_rent,
-            bedroom_count: u.bedroom_count,
-            bathrooms: u.bathrooms,
-            sqft: u.sqft,
-            availability_date: u.availability_date,
-            property_name: prop?.name ?? null,
-          }
-        })
-      )
+      setUnits(result.success ? result.units : [])
       setLoading(false)
     }
     void load()
