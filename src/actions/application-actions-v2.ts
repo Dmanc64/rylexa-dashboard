@@ -821,6 +821,404 @@ async function fetchFullApplication(supabaseAdmin: ReturnType<typeof getAdminCli
   }
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// 8. SAVE CO-APPLICANT DRAFT (per-step or full)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Payload the co-applicant portal sends. All fields optional — only what's
+ * present gets written. SSN/gov-ID are accepted as plaintext and encrypted
+ * server-side using the same pgcrypto key as the primary applicant.
+ */
+export type CoApplicantDraftPayload = {
+  // Identity (read-only from invite; allow edit for typos)
+  full_name?: string | null
+  email?: string | null
+
+  // Contact
+  phone?: string | null
+
+  // Personal IDs (PLAINTEXT input — server encrypts before storing)
+  date_of_birth?: string | null
+  ssn_plaintext?: string | null
+  gov_id_plaintext?: string | null
+  gov_id_issuing_state?: string | null
+
+  // Current address
+  current_street_1?: string | null
+  current_street_2?: string | null
+  current_city?: string | null
+  current_state?: string | null
+  current_postal_code?: string | null
+  current_occupancy_type?: string | null
+  current_monthly_payment?: number | null
+  current_landlord_name?: string | null
+  current_landlord_phone?: string | null
+
+  // Employment
+  employer?: string | null
+  employer_phone?: string | null
+  position_held?: string | null
+  years_worked?: number | null
+  monthly_salary?: number | null
+  supervisor_name?: string | null
+  supervisor_email?: string | null
+
+  // Screening
+  q_delinquent_payment?: boolean | null
+  q_felony_conviction?: boolean | null
+  q_sued_landlord?: boolean | null
+  q_water_filled_furniture?: boolean | null
+  q_smoker?: boolean | null
+
+  // Notes
+  notes?: string | null
+}
+
+const COAPPLICANT_SCALAR_FIELDS: ReadonlyArray<keyof CoApplicantDraftPayload> = [
+  'full_name', 'email', 'phone',
+  'date_of_birth', 'gov_id_issuing_state',
+  'current_street_1', 'current_street_2', 'current_city', 'current_state',
+  'current_postal_code', 'current_occupancy_type', 'current_monthly_payment',
+  'current_landlord_name', 'current_landlord_phone',
+  'employer', 'employer_phone', 'position_held', 'years_worked',
+  'monthly_salary', 'supervisor_name', 'supervisor_email',
+  'q_delinquent_payment', 'q_felony_conviction', 'q_sued_landlord',
+  'q_water_filled_furniture', 'q_smoker',
+  'notes',
+] as const
+
+/**
+ * Save partial co-applicant data via their portal_token.
+ * Rejects if the co-applicant has already submitted (`submitted_at IS NOT NULL`)
+ * or if the parent application has been submitted then locked.
+ */
+export async function saveCoApplicantDraft(
+  portal_token: string,
+  payload: CoApplicantDraftPayload
+) {
+  const supabaseAdmin = getAdminClient()
+
+  const co = await lookupCoApplicant(supabaseAdmin, portal_token)
+  if (!co) return { success: false, message: 'Invalid or expired link.' }
+
+  // Pull submitted_at + email lowercase normalization
+  const { data: full } = await supabaseAdmin
+    .from('application_coapplicants')
+    .select('id, application_id, submitted_at')
+    .eq('id', co.id)
+    .single()
+  if (!full) return { success: false, message: 'Co-applicant not found.' }
+  if (full.submitted_at) {
+    return { success: false, message: 'You have already submitted your portion.' }
+  }
+
+  // Build scalar updates
+  const updates: Record<string, unknown> = {}
+  for (const f of COAPPLICANT_SCALAR_FIELDS) {
+    if (payload[f] !== undefined) updates[f as string] = payload[f]
+  }
+  // Lowercase email if updated
+  if (typeof updates.email === 'string') updates.email = (updates.email as string).toLowerCase()
+
+  // PII fields
+  if (payload.ssn_plaintext !== undefined) {
+    if (payload.ssn_plaintext === null || payload.ssn_plaintext.trim() === '') {
+      updates.ssn_encrypted = null
+      updates.ssn_last_4 = null
+    } else {
+      const key = getPiiKey()
+      const { data: encResult, error: encErr } = await supabaseAdmin.rpc('encrypt_pii', {
+        p_plaintext: payload.ssn_plaintext,
+        p_key: key,
+      })
+      if (encErr) return { success: false, message: 'Could not secure SSN: ' + encErr.message }
+      updates.ssn_encrypted = encResult
+      updates.ssn_last_4 = extractLast4(payload.ssn_plaintext)
+    }
+  }
+  if (payload.gov_id_plaintext !== undefined) {
+    if (payload.gov_id_plaintext === null || payload.gov_id_plaintext.trim() === '') {
+      updates.gov_id_encrypted = null
+    } else {
+      const key = getPiiKey()
+      const { data: encResult, error: encErr } = await supabaseAdmin.rpc('encrypt_pii', {
+        p_plaintext: payload.gov_id_plaintext,
+        p_key: key,
+      })
+      if (encErr) return { success: false, message: 'Could not secure government ID: ' + encErr.message }
+      updates.gov_id_encrypted = encResult
+    }
+  }
+
+  // Promote status from "Invited" to "Started" on first save
+  // (getApplicationByCoApplicantToken already does this on landing, but be safe).
+  // Don't downgrade an already-Started row.
+  // The `status` column check constraint allows: Invited, Started, Submitted, Declined.
+  // No-op if status is already Started/Submitted/Declined.
+  // Doing it inline keeps us to one UPDATE round-trip.
+
+  if (Object.keys(updates).length === 0) {
+    return { success: true, message: 'Nothing to save.' }
+  }
+
+  const { error } = await supabaseAdmin
+    .from('application_coapplicants')
+    .update(updates)
+    .eq('id', co.id)
+  if (error) return { success: false, message: 'Could not save: ' + error.message }
+
+  return { success: true, message: 'Saved.' }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 9. SUBMIT CO-APPLICANT
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Mark a co-applicant's portion as submitted. Idempotent.
+ */
+export async function submitCoApplicant(portal_token: string) {
+  const supabaseAdmin = getAdminClient()
+
+  const co = await lookupCoApplicant(supabaseAdmin, portal_token)
+  if (!co) return { success: false, message: 'Invalid or expired link.' }
+
+  const { data: full } = await supabaseAdmin
+    .from('application_coapplicants')
+    .select('id, submitted_at')
+    .eq('id', co.id)
+    .single()
+  if (!full) return { success: false, message: 'Co-applicant not found.' }
+
+  if (full.submitted_at) {
+    return { success: true, message: 'Already submitted.', submitted_at: full.submitted_at }
+  }
+
+  const now = new Date().toISOString()
+  const { error } = await supabaseAdmin
+    .from('application_coapplicants')
+    .update({ submitted_at: now, status: 'Submitted' })
+    .eq('id', co.id)
+
+  if (error) return { success: false, message: 'Submit failed: ' + error.message }
+  return { success: true, message: 'Submitted.', submitted_at: now }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 10. UPLOAD CO-APPLICANT ATTACHMENT
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * File upload for a co-applicant. Same bucket and metadata table as the
+ * primary applicant; the metadata row records which co-applicant uploaded
+ * it via `coapplicant_id`.
+ *
+ * FormData entries expected:
+ *   - portal_token: string
+ *   - file: File
+ *   - label: string (optional)
+ */
+export async function uploadCoApplicantAttachment(formData: FormData) {
+  const supabaseAdmin = getAdminClient()
+
+  const token = formData.get('portal_token') as string | null
+  const file  = formData.get('file') as File | null
+  const label = (formData.get('label') as string | null) ?? null
+
+  if (!token || !file) return { success: false, message: 'Missing portal_token or file.' }
+
+  const co = await lookupCoApplicant(supabaseAdmin, token)
+  if (!co) return { success: false, message: 'Invalid or expired link.' }
+
+  const { data: full } = await supabaseAdmin
+    .from('application_coapplicants')
+    .select('id, application_id, submitted_at')
+    .eq('id', co.id)
+    .single()
+  if (!full) return { success: false, message: 'Co-applicant not found.' }
+  if (full.submitted_at) {
+    return { success: false, message: 'Already submitted; cannot add files.' }
+  }
+
+  if (file.size > MAX_FILE_SIZE) {
+    return { success: false, message: `File too large (${Math.round(file.size / 1024 / 1024)}MB). Max 10MB.` }
+  }
+  if (!ALLOWED_MIME_TYPES.has(file.type)) {
+    return { success: false, message: `File type ${file.type || 'unknown'} not allowed.` }
+  }
+
+  const safeName = file.name.replace(/[^a-zA-Z0-9.\-_]/g, '_').slice(0, 80)
+  const stamp    = Date.now().toString(36)
+  const rand     = Math.random().toString(36).slice(2, 8)
+  // Path: {application_id}/coapplicant-{coapplicant_id}/{ts}-{rand}-name
+  const path     = `${full.application_id}/coapplicant-${full.id}/${stamp}-${rand}-${safeName}`
+
+  const { error: upErr } = await supabaseAdmin.storage
+    .from('application-attachments')
+    .upload(path, file, { contentType: file.type, upsert: false })
+  if (upErr) return { success: false, message: 'Upload failed: ' + upErr.message }
+
+  const { data: meta, error: insErr } = await supabaseAdmin
+    .from('application_attachments')
+    .insert({
+      application_id: full.application_id,
+      coapplicant_id: full.id,
+      file_name: file.name,
+      file_path: path,
+      file_size: file.size,
+      mime_type: file.type,
+      label,
+    })
+    .select('id, file_name, file_path, file_size, mime_type, label, uploaded_at')
+    .single()
+
+  if (insErr) {
+    await supabaseAdmin.storage.from('application-attachments').remove([path]).catch(() => {})
+    return { success: false, message: 'Metadata save failed: ' + insErr.message }
+  }
+
+  return { success: true, attachment: meta }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 11. DELETE CO-APPLICANT ATTACHMENT
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Remove an attachment uploaded by this co-applicant. Only allowed if it
+ * was theirs (coapplicant_id matches) and they haven't submitted yet.
+ */
+export async function deleteCoApplicantAttachment(params: {
+  portal_token: string
+  attachment_id: string
+}) {
+  const supabaseAdmin = getAdminClient()
+
+  if (!isValidUuid(params.attachment_id)) return { success: false, message: 'Invalid attachment id.' }
+  const co = await lookupCoApplicant(supabaseAdmin, params.portal_token)
+  if (!co) return { success: false, message: 'Invalid or expired link.' }
+
+  const { data: full } = await supabaseAdmin
+    .from('application_coapplicants')
+    .select('id, submitted_at')
+    .eq('id', co.id)
+    .single()
+  if (!full) return { success: false, message: 'Co-applicant not found.' }
+  if (full.submitted_at) return { success: false, message: 'Already submitted; cannot remove files.' }
+
+  const { data: meta } = await supabaseAdmin
+    .from('application_attachments')
+    .select('id, file_path, coapplicant_id')
+    .eq('id', params.attachment_id)
+    .maybeSingle()
+
+  if (!meta || meta.coapplicant_id !== co.id) {
+    return { success: false, message: 'Attachment not found.' }
+  }
+
+  await supabaseAdmin.storage.from('application-attachments').remove([meta.file_path]).catch(() => {})
+  const { error } = await supabaseAdmin
+    .from('application_attachments')
+    .delete()
+    .eq('id', params.attachment_id)
+  if (error) return { success: false, message: 'Could not delete: ' + error.message }
+  return { success: true }
+}
+
+
+// ────────────────────────────────────────────────────────────────────────────
+// 12. FETCH CO-APPLICANT FULL DATA (for resume)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the co-applicant's own data + parent application info, used by
+ * the portal wizard to hydrate on load and on resume.
+ *
+ * Unlike `getApplicationByCoApplicantToken` (which is intentionally minimal),
+ * this returns the full co-applicant row + their attachments so the wizard
+ * can render a true resume experience.
+ */
+export async function getCoApplicantFull(portal_token: string) {
+  const supabaseAdmin = getAdminClient()
+
+  const co = await lookupCoApplicant(supabaseAdmin, portal_token)
+  if (!co) return { success: false as const, message: 'Invalid or expired link.' }
+
+  // Promote Invited → Started on first landing
+  if (co.status === 'Invited') {
+    await supabaseAdmin
+      .from('application_coapplicants')
+      .update({ status: 'Started' })
+      .eq('id', co.id)
+  }
+
+  // Fetch full row (no encrypted bytea blobs)
+  const { data: full } = await supabaseAdmin
+    .from('application_coapplicants')
+    .select(`
+      id, application_id, full_name, email, applicant_type, status,
+      submitted_at, invite_sent_at, phone,
+      date_of_birth, ssn_last_4, gov_id_issuing_state,
+      current_street_1, current_street_2, current_city, current_state,
+      current_postal_code, current_occupancy_type, current_monthly_payment,
+      current_landlord_name, current_landlord_phone,
+      employer, employer_phone, position_held, years_worked,
+      monthly_salary, supervisor_name, supervisor_email,
+      q_delinquent_payment, q_felony_conviction, q_sued_landlord,
+      q_water_filled_furniture, q_smoker, notes
+    `)
+    .eq('id', co.id)
+    .single()
+
+  if (!full) return { success: false as const, message: 'Co-applicant not found.' }
+
+  // Parent app basics: unit name + property name + primary applicant name
+  const { data: parent } = await supabaseAdmin
+    .from('applications')
+    .select(`
+      id, first_name, last_name, desired_move_in, submitted_at,
+      units ( name, properties ( name ) )
+    `)
+    .eq('id', full.application_id)
+    .single()
+
+  const parentUnits = parent && (parent as { units?: unknown }).units
+  const unitRow = Array.isArray(parentUnits) ? parentUnits[0] : parentUnits
+  const propRow = unitRow && (unitRow as { properties?: unknown }).properties
+  const propObj = Array.isArray(propRow) ? propRow[0] : propRow
+
+  // Attachments uploaded by this co-applicant
+  const { data: attachments } = await supabaseAdmin
+    .from('application_attachments')
+    .select('id, file_name, file_path, file_size, mime_type, label, uploaded_at')
+    .eq('coapplicant_id', full.id)
+    .order('uploaded_at')
+
+  return {
+    success: true as const,
+    coapplicant: {
+      ...full,
+      ssn_on_file: !!full.ssn_last_4,
+      gov_id_on_file: !!full.gov_id_issuing_state,
+    },
+    parent_application: parent ? {
+      id: (parent as { id: string }).id,
+      primary_first_name: (parent as { first_name: string | null }).first_name,
+      primary_last_name: (parent as { last_name: string | null }).last_name,
+      desired_move_in: (parent as { desired_move_in: string | null }).desired_move_in,
+      submitted_at: (parent as { submitted_at: string | null }).submitted_at,
+      unit_name: (unitRow as { name?: string | null } | null)?.name ?? null,
+      property_name: (propObj as { name?: string | null } | null)?.name ?? null,
+    } : null,
+    attachments: attachments ?? [],
+  }
+}
+
+
 /** Verify the caller is logged in as an Admin (cookie-based). */
 async function verifyAdminSession(): Promise<boolean> {
   const cookieStore = await cookies()
